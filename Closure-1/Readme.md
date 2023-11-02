@@ -1,0 +1,1 @@
+# Closure test 1 
