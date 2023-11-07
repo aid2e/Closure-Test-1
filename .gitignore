@@ -1,6 +1,6 @@
-*.key
-*/*.key
-*/*/*.key
+secrets.key
+*/secrets.key
+*/*/secrets.key
 
 *pycache*
 */*pycache*
