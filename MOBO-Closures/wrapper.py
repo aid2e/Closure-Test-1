@@ -163,8 +163,8 @@ if __name__ == "__main__":
     N_INIT = max(config["n_initial_points"], M * (d + 1))
     BATCH_SIZE = config["n_batch"]
     N_BATCH = config["n_calls"]
-    num_samples = 64 if (not config.get("MOBO")) else config["MOBO"]["num_samples"]
-    warmup_steps = 128 if (not config.get("MOBO")) else config["MOBO"]["warmup_steps"]
+    num_samples = 64 if (not config.get("MOBO_params")) else config["MOBO_params"]["num_samples"]
+    warmup_steps = 128 if (not config.get("MOBO_params")) else config["MOBO_params"]["warmup_steps"]
     if (doMonitor):
         MLTracker.config["BATCH_SIZE"] = BATCH_SIZE
         MLTracker.config["N_BATCH"] = N_BATCH
