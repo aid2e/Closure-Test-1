@@ -63,9 +63,8 @@ if __name__ == "__main__":
         else:
             os.environ["WANDB_API_KEY"] = ReadJsonFile(args.secret_file)["WANDB_API_KEY"] if not os.getenv("WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
             wandb.login(anonymous='never', key = os.environ['WANDB_API_KEY'], relogin=True)
-            MLTracker = wandb.init(**config["WandB_params"])
-            MLTracker.config["n_design_params"] = config["n_design_params"]
-            MLTracker.config["n_objectives"] = config["n_objectives"]
+            track_config = {"n_design_params": config["n_design_params"], "n_objectives" : config["n_objectives"]}
+            MLTracker = wandb.init(config = track_config, **config["WandB_params"])
             
     optimInfo = "optimInfo.txt" if not jsonFile else "optimInfo_continued.txt"
     if(not os.path.exists(outdir)):
