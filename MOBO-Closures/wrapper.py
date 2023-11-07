@@ -171,6 +171,15 @@ if __name__ == "__main__":
         MLTracker.config["num_samples"] = num_samples
         MLTracker.config["warmup_steps"] = warmup_steps
         MLTracker.define_metric("iterations")
+        logMetrics = ["MCMC Training [s]", 
+                      f"Gen Acq func (q = {BATCH_SIZE}) [s]",
+                      f"Trail Exec (q = {BATCH_SIZE}) [s]",
+                      "HV",
+                      "Increase in HV w.r.t true pareto",
+                      "HV Calculation [s]",
+                      "Total time [s]"]
+        for l in logMetrics:
+            MLTracker.define_metric(l, step_metric = "iterations")
     hv_list = []
     time_gen = []
     time_mcmc = []
@@ -264,11 +273,9 @@ if __name__ == "__main__":
                       "HV": hv,
                       "Increase in HV w.r.t true pareto": converged,
                       "HV Calculation [s]": time_hv[-1],
-                      "Total time [s]": time_tot[-1]
+                      "Total time [s]": time_tot[-1],
+                      "iterations": last_call
                       }
-        for met in logMetrics.keys():
-            MLTracker.define_metric(met, step_metric = "iterations")
-        logMetrics["iterations"] = last_call
         MLTracker.log(logMetrics)
     while(converged > tol and last_call <= max_calls and check_imp):
         start_tot = time.time()
@@ -359,9 +366,9 @@ if __name__ == "__main__":
                             "HV": hv,
                             "Increase in HV w.r.t true pareto": converged,
                             "HV Calculation [s]": time_hv[-1],
-                            "Total time [s]": time_tot[-1]
+                            "Total time [s]": time_tot[-1],
+                            "iterations" : last_call
                             }
-                logMetrics["iterations"] = last_call
                 MLTracker.log(logMetrics)
     MLTracker.finish()
         
