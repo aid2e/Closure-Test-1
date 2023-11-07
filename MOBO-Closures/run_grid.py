@@ -12,4 +12,5 @@ for ob in M:
         config = config.replace('__d__', str(de))
         with open(f"optimize_M{ob}_d{de}.config", "w") as f:
             f.write(config)
-        os.system(f"python wrapper.py -c optimize_M{ob}_d{de}.config -p True")
+        os.system(f"python wrapper.py -c optimize_M{ob}_d{de}.config -p True -s secrets.key")
+        

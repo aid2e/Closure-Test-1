@@ -24,6 +24,8 @@ from botorch.test_functions.multi_objective import DTLZ2
 
 import matplotlib.pyplot as plt
 
+import wandb
+
 
 def RunProblem(problem, x, kwargs):
     return problem(torch.tensor(x, **kwargs).clamp(0.0, 1.0))
@@ -36,6 +38,10 @@ if __name__ == "__main__":
     parser.add_argument('-j', '--json_file', 
                         help = "The json file to load and continue optimization", 
                         type = str, required=False)
+    parser.add_argument('-s', '--secret_file', 
+                        help = "The file containing the secret key for weights and biases",
+                        type = str, required = False,
+                        default = "secrets.key")
     parser.add_argument('-p', '--profile',
                         help = "Profile the code",
                         type = bool, required = False, 
@@ -48,6 +54,19 @@ if __name__ == "__main__":
     profiler = args.profile
     outdir = config["OUTPUT_DIR"]
     save_every_n = config["save_every_n_call"]
+    doMonitor = (True if config.get("WandB_params") else False) and profiler
+    MLTracker = None
+    if (doMonitor):
+        if (not os.getenv("WANDB_API_KEY") and not os.path.exists(args.secret_file)):
+            print ("Please set WANDB_API_KEY in your environment variables or include a file named secrets.key in the same directory as this script.")
+            sys.exit()
+        else:
+            os.environ["WANDB_API_KEY"] = ReadJsonFile(args.secret_file)["WANDB_API_KEY"] if not os.getenv("WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
+            wandb.login(anonymous='never', key = os.environ['WANDB_API_KEY'], relogin=True)
+            MLTracker = wandb.init(**config["WandB_params"])
+            MLTracker.config["n_design_params"] = config["n_design_params"]
+            MLTracker.config["n_objectives"] = config["n_objectives"]
+            
     optimInfo = "optimInfo.txt" if not jsonFile else "optimInfo_continued.txt"
     if(not os.path.exists(outdir)):
         os.makedirs(outdir)
@@ -64,7 +83,7 @@ if __name__ == "__main__":
         f.write("Optimization has " + str(config["n_design_params"]) + " design parameters\n")
         f.write("Optimization Info with description : " + config["description"] + "\n")
         f.write("Starting optimization at " + str(datetime.datetime.now()) + "\n")
-        f.write(f"Optimization is running on {os.uname()[1]}\n")
+        f.write(f"Optimization is running on {os.uname().nodename}\n")
         f.write("Optimization description : " + config["description"] + "\n")
         if(isGPU):
             f.write("Optimization is running on GPU : " + torch.cuda.get_device_name() + "\n")
@@ -88,6 +107,11 @@ if __name__ == "__main__":
                                        ).compute_hypervolume().item()
     print (f"Random Points Hypervolume: {hv_npoints}")
     
+    if (doMonitor):
+        MLTracker.summary["HV"] = hv_pareto
+        MLTracker.summary["HV_RandomPoints"] = hv_npoints
+        MLTracker.summary["ref_point"] = str(problem.ref_point.tolist())
+            
     with open(os.path.join(outdir, optimInfo), "a") as f:
         f.write("Problem Reference points : " + str(problem.ref_point) + "\n")
         f.write("Problem Pareto Front Hypervolume : " + str(hv_pareto) + "\n")
@@ -142,6 +166,12 @@ if __name__ == "__main__":
     N_BATCH = config["n_calls"]
     num_samples = 64 if (not config.get("MOBO")) else config["MOBO"]["num_samples"]
     warmup_steps = 128 if (not config.get("MOBO")) else config["MOBO"]["warmup_steps"]
+    if (doMonitor):
+        MLTracker.config["BATCH_SIZE"] = BATCH_SIZE
+        MLTracker.config["N_BATCH"] = N_BATCH
+        MLTracker.config["num_samples"] = num_samples
+        MLTracker.config["warmup_steps"] = warmup_steps
+        MLTracker.define_metric("iterations")
     hv_list = []
     time_gen = []
     time_mcmc = []
@@ -194,7 +224,7 @@ if __name__ == "__main__":
     if (jsonFile): 
         print("\n\n WARNING::YOU ARE LOADING AN EXISTING FILE: ", jsonFile, "\n\n")
         tmp_list = pickle.load(open(jsonFile, "rb" ))
-        last_call = tmp_list["last_call"] + 1
+        last_call = tmp_list["last_call"]
         experiment = tmp_list["experiment"]
         hv_pareto = tmp_list["HV_PARETO"]
         hv_list = tmp_list["hv_list"]
@@ -230,8 +260,18 @@ if __name__ == "__main__":
                         "converged_list" : converged_list
                         }
         pd.DataFrame(Profile_data).to_csv(os.path.join(outdir, "profile_data.csv"))
-            
-    while(converged > tol and last_call < max_calls and check_imp):
+    if (doMonitor and jsonFile):
+        logMetrics = {f"Trail Exec (q = {BATCH_SIZE}) [s]" : time_trail[-1],
+                      "HV": hv,
+                      "Increase in HV w.r.t true pareto": converged,
+                      "HV Calculation [s]": time_hv[-1],
+                      "Total time [s]": time_tot[-1]
+                      }
+        for met in logMetrics.keys():
+            MLTracker.define_metric(met, step_metric = "iterations")
+        logMetrics["iterations"] = last_call
+        MLTracker.log(logMetrics)
+    while(converged > tol and last_call <= max_calls and check_imp):
         start_tot = time.time()
         start_mcmc = time.time()
         model = Models.FULLYBAYESIANMOO(
@@ -313,6 +353,18 @@ if __name__ == "__main__":
                                 "converged_list" : converged_list
                                 }
                 pd.DataFrame(Profile_data).to_csv(os.path.join(outdir, "profile_data.csv"))
+            if (doMonitor):
+                logMetrics = {"MCMC Training [s]" : time_mcmc[-1],
+                            f"Gen Acq func (q = {BATCH_SIZE}) [s]": time_gen[-1],
+                            f"Trail Exec (q = {BATCH_SIZE}) [s]" : time_trail[-1],
+                            "HV": hv,
+                            "Increase in HV w.r.t true pareto": converged,
+                            "HV Calculation [s]": time_hv[-1],
+                            "Total time [s]": time_tot[-1]
+                            }
+                logMetrics["iterations"] = last_call
+                MLTracker.log(logMetrics)
+    MLTracker.finish()
         
         
   
