@@ -49,7 +49,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # READ SOME INFO 
-    config = ReadJsonFile(args.config)
+    config = read_json_file(args.config)
     jsonFile = args.json_file
     profiler = args.profile
     outdir = config["OUTPUT_DIR"]
@@ -61,7 +61,7 @@ if __name__ == "__main__":
             print ("Please set WANDB_API_KEY in your environment variables or include a file named secrets.key in the same directory as this script.")
             sys.exit()
         else:
-            os.environ["WANDB_API_KEY"] = ReadJsonFile(args.secret_file)["WANDB_API_KEY"] if not os.getenv("WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
+            os.environ["WANDB_API_KEY"] = read_json_file(args.secret_file)["WANDB_API_KEY"] if not os.getenv("WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
             wandb.login(anonymous='never', key = os.environ['WANDB_API_KEY'], relogin=True)
             track_config = {"n_design_params": config["n_design_params"], "n_objectives" : config["n_objectives"]}
             MLTracker = wandb.init(config = track_config, **config["WandB_params"])
