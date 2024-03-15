@@ -382,4 +382,5 @@ if __name__ == "__main__":
                               "iterations": last_call
                               }
                 MLTracker.log(logMetrics)
-    MLTracker.finish()
+    if doMonitor:
+        MLTracker.finish()
