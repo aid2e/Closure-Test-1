@@ -53,10 +53,6 @@ class LocalTracker(Tracker):
             os.makedirs(self.out_dir)
 
 
-class JsonTracker(LocalTracker):
-    pass
-
-
 class CsvTracker(LocalTracker):
     def __init__(self, conf):
         super().__init__(conf)
@@ -399,18 +395,6 @@ if __name__ == "__main__":
 
         for tracker in my_trackers:
             tracker.log_iter_results(iter_res)
-
-        if iter_res['last_call'][-1] % save_every_n == 0:
-            list_dump = {
-                "experiment": experiment,
-                "HV_PARETO": hv_pareto,
-                "data": data,
-                "outcomes": outcomes,
-            }
-            list_dump.update(iter_res)
-            with open(os.path.join(outdir, f"optim_iteration_{iter_res['last_call'][-1]}.json"), 'wb') as handle:
-                pickle.dump(list_dump, handle)
-                print(f"saved the file for {iter_res['last_call'][-1]} iteration")
 
     for tracker in my_trackers:
         tracker.finalize()
