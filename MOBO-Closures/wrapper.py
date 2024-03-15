@@ -59,13 +59,12 @@ if __name__ == "__main__":
 
     tracker_group = TrackerGroup([TxtTracker(config)])
     if args.profile:
-        print('appending csv tracker')
         tracker_group.append(CsvTracker(config))
 
     jsonFile = args.json_file
     outdir = config["OUTPUT_DIR"]
 
-    if (True if config.get("WandB_params") else False) and args.profile:
+    if config.get("WandB_params") and args.profile:
         tracker_group.append(WandBTracker(config))
 
     d = config["n_design_params"]
