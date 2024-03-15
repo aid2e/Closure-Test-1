@@ -23,6 +23,7 @@ import wandb
 
 from collections import defaultdict
 from abc import ABC
+from textwrap import dedent
 
 
 class Tracker(ABC):
@@ -37,6 +38,42 @@ class Tracker(ABC):
 
     def finalize(self):
         pass
+
+
+class LocalTracker(Tracker):
+    def __init__(self, conf):
+        out_dir = config["OUTPUT_DIR"]
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+        self.full_path = os.path.join(out_dir, "optimInfo.txt")
+        optimization_info = dedent(f"""
+            Optimization Info with name: {conf["name"]}
+            Optimization has {conf["n_objectives"]} objectives
+            Optimization has {conf["n_design_params"]} design parameters
+            Optimization Info with description: {conf["description"]}
+            Starting optimization at {datetime.datetime.now()}
+            Optimization is running on {os.uname().nodename}
+            Optimization description: {conf["description"]}
+        """)
+        if torch.cuda.is_available():
+            optimization_info += f"Optimization is running on GPU: {torch.cuda.get_device_name()}\n"
+        with open(self.full_path, "w") as f:
+            f.write(optimization_info)
+
+    def write_problem_summary(self, hv_pareto, hv_npoints, ref_point):
+        with open(self.full_path, "a") as f:
+            f.write(dedent(f"""\
+            Problem Reference points: {problem.ref_point}
+            Problem Pareto Front Hypervolume: {hv_pareto}
+            Problem Random Points Hypervolume: {hv_npoints}"""))
+
+    def log_iter_results(self, res):
+        with open(self.full_path, "a") as f:
+            f.write(dedent(f"""\
+            Optimization call: {res['last_call'][-1]}
+            Optimization HV: {res['hv'][-1]}
+            Optimization Pareto HV - HV / Pareto HV: {res['converged'][-1]:.4f}
+            Optimization converged: {res['converged'][-1] < tol}"""))
 
 
 class WandBTracker(Tracker):
@@ -61,12 +98,12 @@ class WandBTracker(Tracker):
         })
         self._tracker.define_metric("iterations")
         log_metrics = ["MCMC Training [s]",
-                      f"Gen Acq func (q = {config['n_batch']}) [s]",
-                      f"Trail Exec (q = {config['n_batch']}) [s]",
-                      "HV",
-                      "Increase in HV w.r.t true pareto",
-                      "HV Calculation [s]",
-                      "Total time [s]"]
+                       f"Gen Acq func (q = {config['n_batch']}) [s]",
+                       f"Trail Exec (q = {config['n_batch']}) [s]",
+                       "HV",
+                       "Increase in HV w.r.t true pareto",
+                       "HV Calculation [s]",
+                       "Total time [s]"]
         for lm in log_metrics:
             self._tracker.define_metric(lm, step_metric="iterations")
 
@@ -119,7 +156,7 @@ if __name__ == "__main__":
     # READ SOME INFO 
     config = read_json_file(args.config)
 
-    my_trackers = []
+    my_trackers = [LocalTracker(config)]
 
     jsonFile = args.json_file
     profiler = args.profile
@@ -130,8 +167,6 @@ if __name__ == "__main__":
         my_trackers.append(WandBTracker(config, args.secret_file))
 
     optimInfo = "optimInfo.txt" if not jsonFile else "optimInfo_continued.txt"
-    if not os.path.exists(outdir):
-        os.makedirs(outdir)
     d = config["n_design_params"]
     M = config["n_objectives"]
     isGPU = torch.cuda.is_available()
@@ -139,19 +174,6 @@ if __name__ == "__main__":
         "dtype": torch.double,
         "device": torch.device("cuda" if isGPU else "cpu"),
     }
-    optimization_info = f"""
-        Optimization Info with name: {config["name"]}
-        Optimization has {config["n_objectives"]} objectives
-        Optimization has {config["n_design_params"]} design parameters
-        Optimization Info with description: {config["description"]}
-        Starting optimization at {datetime.datetime.now()}
-        Optimization is running on {os.uname().nodename}
-        Optimization description: {config["description"]}
-    """
-    if torch.cuda.is_available():
-        optimization_info += f"Optimization is running on GPU: {torch.cuda.get_device_name()}\n"
-    with open(os.path.join(outdir, optimInfo), "w") as f:
-        f.write(optimization_info)
 
     print("Running on GPU? ", isGPU)
 
@@ -176,11 +198,6 @@ if __name__ == "__main__":
     for tracker in my_trackers:
         tracker.write_problem_summary(hv_pareto, hv_npoints, problem.ref_point)
 
-    with open(os.path.join(outdir, optimInfo), "a") as f:
-        f.write(f"""\
-        Problem Reference points: {problem.ref_point}
-        Problem Pareto Front Hypervolume: {hv_pareto}
-        Problem Random Points Hypervolume: {hv_npoints}""")
 
     @glob_fun
     def ftot(x):
@@ -295,7 +312,7 @@ if __name__ == "__main__":
     roll = 30
     roll2 = min(len(iter_res['hv']) - 1, 2 * roll)
     if len(iter_res['hv']) > roll:
-        tmp_tol = 1. if iter_res['hv'][-roll] == 0. else\
+        tmp_tol = 1. if iter_res['hv'][-roll] == 0. else \
             abs((iter_res['hv'][-1] - iter_res['hv'][-roll]) / iter_res['hv'][-roll])
 
         # atleast 5% improvement w.r.t. last 5 calls and last call is better than first call
@@ -346,7 +363,7 @@ if __name__ == "__main__":
         iter_res['converged'].append((hv_pareto - hv) / hv_pareto)
         iter_res['hv'].append(hv)
         if len(iter_res['hv']) > roll:
-            tmp_tol = 1. if (iter_res['hv'][-roll] == 0.) else\
+            tmp_tol = 1. if (iter_res['hv'][-roll] == 0.) else \
                 abs((iter_res['hv'][-1] - iter_res['hv'][-roll]) / iter_res['hv'][-roll])
             # atleast 5% improvement w.r.t. last #roll calls and last call is better than first call
             check_imp = (tmp_tol > 0.0001) or (
@@ -357,12 +374,6 @@ if __name__ == "__main__":
         iter_res['time_trail'].append(end_trail - start_trail)
         iter_res['time_hv'].append(end_hv - start_hv)
         roll2 += 1
-
-        with open(os.path.join(outdir, optimInfo), "a") as f:
-            f.write(f"""Optimization call: {iter_res['last_call'][-1]}
-                        Optimization HV: {iter_res['hv'][-1]}
-                        Optimization Pareto HV - HV / Pareto HV: {iter_res['converged'][-1]:.4f}
-                        Optimization converged: {iter_res['converged'][-1] < tol}""")
 
         if iter_res['last_call'][-1] % save_every_n == 0:
             list_dump = {
