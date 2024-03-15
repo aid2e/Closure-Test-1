@@ -74,16 +74,20 @@ if __name__ == "__main__":
         "dtype": torch.double,
         "device": torch.device("cuda" if isGPU else "cpu"),
     }
+    optimization_info = f"""
+        Optimization Info with name: {config["name"]}
+        Optimization has {config["n_objectives"]} objectives
+        Optimization has {config["n_design_params"]} design parameters
+        Optimization Info with description: {config["description"]}
+        Starting optimization at {datetime.datetime.now()}
+        Optimization is running on {os.uname().nodename}
+        Optimization description: {config["description"]}
+    """
+    if torch.cuda.is_available():
+        optimization_info += f"Optimization is running on GPU: {torch.cuda.get_device_name()}\n"
     with open(os.path.join(outdir, optimInfo), "w") as f:
-        f.write("Optimization Info with name : " + config["name"] + "\n")
-        f.write("Optimization has " + str(config["n_objectives"]) + " objectives\n")
-        f.write("Optimization has " + str(config["n_design_params"]) + " design parameters\n")
-        f.write("Optimization Info with description : " + config["description"] + "\n")
-        f.write("Starting optimization at " + str(datetime.datetime.now()) + "\n")
-        f.write(f"Optimization is running on {os.uname().nodename}\n")
-        f.write("Optimization description : " + config["description"] + "\n")
-        if (isGPU):
-            f.write("Optimization is running on GPU : " + torch.cuda.get_device_name() + "\n")
+        f.write(optimization_info)
+
     print("Running on GPU? ", isGPU)
 
     problem = DTLZ2(dim=d, num_objectives=M, negate=True).to(**tkwargs)
@@ -110,10 +114,9 @@ if __name__ == "__main__":
         MLTracker.summary["ref_point"] = str(problem.ref_point.tolist())
 
     with open(os.path.join(outdir, optimInfo), "a") as f:
-        f.write("Problem Reference points : " + str(problem.ref_point) + "\n")
-        f.write("Problem Pareto Front Hypervolume : " + str(hv_pareto) + "\n")
-        f.write("Problem Random Points Hypervolume : " + str(hv_npoints) + "\n")
-
+        f.write(f"""Problem Reference points: {problem.ref_point}
+                    Problem Pareto Front Hypervolume: {hv_pareto}
+                    Problem Random Points Hypervolume: {hv_npoints}""")
 
     @glob_fun
     def ftot(x):
@@ -337,10 +340,10 @@ if __name__ == "__main__":
         roll2 += 1
 
         with open(os.path.join(outdir, optimInfo), "a") as f:
-            f.write("Optimization call: " + str(last_call) + "\n")
-            f.write("Optimization HV: " + str(hv) + "\n")
-            f.write(f"Optimization Pareto HV - HV / Pareto HV: {converged:.4f} \n")
-            f.write("Optimization converged: " + str(converged < tol) + "\n")
+            f.write(f"""Optimization call: {last_call}
+                        Optimization HV: {hv}
+                        Optimization Pareto HV - HV / Pareto HV: {converged:.4f}
+                        Optimization converged: {converged < tol}""")
 
         if last_call % save_every_n == 0:
             with open(os.path.join(outdir, f'optim_iteration_{last_call}.json'), 'wb') as handle:
