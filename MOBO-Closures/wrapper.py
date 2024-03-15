@@ -1,5 +1,6 @@
 from ProjectUtils.config_editor import *
 from ProjectUtils.mobo_utilities import *
+from ProjectUtils.progress_loggers import *
 
 import os, pickle, torch, argparse, datetime
 import time
@@ -19,136 +20,7 @@ from botorch.utils.multi_objective.box_decompositions.dominated import (
 
 from botorch.test_functions.multi_objective import DTLZ2
 
-import wandb
-
 from collections import defaultdict
-from abc import ABC
-from textwrap import dedent
-
-
-class Tracker(ABC):
-    def __init__(self, conf):
-        self.save_every_n = conf["save_every_n_call"]
-
-    def write_problem_summary(self, hv_pareto, hv_npoints, ref_point):
-        pass
-
-    def log_iter_results(self, res):
-        if not res['last_call'][-1] % self.save_every_n == 0:
-            return
-        self._log_iter_results(res)
-
-    def _log_iter_results(self, res):
-        pass
-
-    def finalize(self):
-        pass
-
-
-class LocalTracker(Tracker):
-    def __init__(self, conf):
-        super().__init__(conf)
-        self.out_dir = conf["OUTPUT_DIR"]
-        if not os.path.exists(self.out_dir):
-            os.makedirs(self.out_dir)
-
-
-class CsvTracker(LocalTracker):
-    def __init__(self, conf):
-        super().__init__(conf)
-        self.full_path = os.path.join(self.out_dir, "profile_data.csv")
-
-    def _log_iter_results(self, res):
-        pd.DataFrame(res).to_csv(self.full_path)
-
-
-class TxtTracker(LocalTracker):
-    def __init__(self, conf):
-        super().__init__(conf)
-        self.full_path = os.path.join(self.out_dir, "optimInfo.txt")
-        optimization_info = dedent(f"""
-            Optimization Info with name: {conf["name"]}
-            Optimization has {conf["n_objectives"]} objectives
-            Optimization has {conf["n_design_params"]} design parameters
-            Optimization Info with description: {conf["description"]}
-            Starting optimization at {datetime.datetime.now()}
-            Optimization is running on {os.uname().nodename}
-            Optimization description: {conf["description"]}
-        """)
-        if torch.cuda.is_available():
-            optimization_info += f"Optimization is running on GPU: {torch.cuda.get_device_name()}\n"
-        with open(self.full_path, "w") as f:
-            f.write(optimization_info)
-
-    def write_problem_summary(self, hv_pareto, hv_npoints, ref_point):
-        with open(self.full_path, "a") as f:
-            f.write(dedent(f"""\
-            Problem Reference points: {problem.ref_point}
-            Problem Pareto Front Hypervolume: {hv_pareto}
-            Problem Random Points Hypervolume: {hv_npoints}"""))
-
-    def _log_iter_results(self, res):
-        with open(self.full_path, "a") as f:
-            f.write(dedent(f"""\
-            Optimization call: {res['last_call'][-1]}
-            Optimization HV: {res['hv'][-1]}
-            Optimization Pareto HV - HV / Pareto HV: {res['converged'][-1]:.4f}
-            Optimization converged: {res['converged'][-1] < tol}"""))
-
-
-class WandBTracker(Tracker):
-    def __init__(self, conf, secret_file):
-        super().__init__(conf)
-        if not os.getenv("WANDB_API_KEY") and not os.path.exists(secret_file):
-            print("Please set WANDB_API_KEY in your environment variables or include a file named secrets.key in the "
-                  "same directory as this script.")
-            sys.exit()
-        os.environ["WANDB_API_KEY"] = read_json_file(args.secret_file)["WANDB_API_KEY"] if not os.getenv(
-            "WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
-        wandb.login(anonymous='never', key=os.environ['WANDB_API_KEY'], relogin=True)
-        track_conf = {k: conf[k] for k in ["n_design_params", "n_objectives"]}
-        self._tracker = wandb.init(config=track_conf, **conf["WandB_params"])
-        num_samples = 64 if (not config.get("MOBO_params")) else config["MOBO_params"]["num_samples"]
-        warmup_steps = 128 if (not config.get("MOBO_params")) else config["MOBO_params"]["warmup_steps"]
-        self._tracker.config.update({
-            "BATCH_SIZE": config["n_batch"],
-            "N_BATCH": config["n_calls"],
-            "num_samples": num_samples,
-            "warmup_steps": warmup_steps
-        })
-        self._tracker.define_metric("iterations")
-        log_metrics = ["MCMC Training [s]",
-                       f"Gen Acq func (q = {config['n_batch']}) [s]",
-                       f"Trail Exec (q = {config['n_batch']}) [s]",
-                       "HV",
-                       "Increase in HV w.r.t true pareto",
-                       "HV Calculation [s]",
-                       "Total time [s]"]
-        for lm in log_metrics:
-            self._tracker.define_metric(lm, step_metric="iterations")
-
-    def write_problem_summary(self, hv_pareto, hv_npoints, ref_point):
-        self._tracker.summary.update({
-            "HV": hv_pareto,
-            "HV_RandomPoints": hv_npoints,
-            "ref_point": str(ref_point.tolist())
-        })
-
-    def _log_iter_results(self, res):
-        bs = self._tracker.config['BATCH_SIZE']
-        self._tracker.log({
-            "MCMC Training [s]": iter_res['time_mcmc'][-1],
-            f"Gen Acq func (q = {bs}) [s]": iter_res['time_gen'][-1],
-            f"Trail Exec (q = {bs}) [s]": res['time_trail'][-1],
-            "HV": res['hv'][-1],
-            "Increase in HV w.r.t true pareto": res['converged'][-1],
-            "HV Calculation [s]": res['time_hv'][-1],
-            "Total time [s]": res['time_tot'][-1],
-            "iterations": res['last_call'][-1]
-        })
-
-    def finalize(self):
-        self._tracker.finish()
 
 
 def RunProblem(problem, x, kwargs):
@@ -175,6 +47,15 @@ if __name__ == "__main__":
 
     # READ SOME INFO 
     config = read_json_file(args.config)
+    # Dynamically add stuff to config
+    config['is_gpu'] = torch.cuda.is_available()
+
+    if not os.getenv("WANDB_API_KEY") and not os.path.exists(args.secret_file):
+        print("Please set WANDB_API_KEY in your environment variables or include a file named secrets.key in the "
+              "same directory as this script.")
+        sys.exit()
+    os.environ["WANDB_API_KEY"] = ce.read_json_file(args.secret_file)["WANDB_API_KEY"] if not os.getenv(
+        "WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
 
     my_trackers = [TxtTracker(config)]
     if args.profile:
@@ -185,7 +66,7 @@ if __name__ == "__main__":
     save_every_n = config["save_every_n_call"]
     doMonitor = (True if config.get("WandB_params") else False) and args.profile
     if doMonitor:
-        my_trackers.append(WandBTracker(config, args.secret_file))
+        my_trackers.append(WandBTracker(config))
 
     optimInfo = "optimInfo.txt" if not jsonFile else "optimInfo_continued.txt"
     d = config["n_design_params"]
@@ -306,6 +187,7 @@ if __name__ == "__main__":
         iter_res['hv'].append(hv)
         iter_res['last_call'].append(0)
         iter_res['converged'].append((hv_pareto - hv) / hv_pareto)
+        iter_res['is_converged'].append(((hv_pareto - hv) / hv_pareto) < config["hv_tolerance"])
 
         print(f"Initialized points, HV: {hv}")
         list_dump = {
@@ -379,6 +261,7 @@ if __name__ == "__main__":
 
         iter_res['last_call'].append(iter_res['last_call'][-1] + 1)
         iter_res['converged'].append((hv_pareto - hv) / hv_pareto)
+        iter_res['is_converged'].append(((hv_pareto - hv) / hv_pareto) < tol)
         iter_res['hv'].append(hv)
         if len(iter_res['hv']) > roll:
             tmp_tol = 1. if (iter_res['hv'][-roll] == 0.) else \
