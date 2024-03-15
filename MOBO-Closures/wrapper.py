@@ -21,6 +21,9 @@ from botorch.test_functions.multi_objective import DTLZ2
 
 import wandb
 
+from collections import defaultdict
+from copy import deepcopy
+
 
 def RunProblem(problem, x, kwargs):
     return problem(torch.tensor(x, **kwargs).clamp(0.0, 1.0))
@@ -191,16 +194,9 @@ if __name__ == "__main__":
                       "Total time [s]"]
         for l in logMetrics:
             MLTracker.define_metric(l, step_metric="iterations")
-    hv_list = []
-    time_gen = []
-    time_mcmc = []
-    time_hv = []
-    time_tot = []
-    time_trail = []
-    converged_list = []
-    hv = 0.0
+
+    iter_res = defaultdict(list)
     model = None
-    last_call = 0
 
     if not jsonFile:
         start_tot = time.time()
@@ -218,78 +214,60 @@ if __name__ == "__main__":
             hv = 0.
         end_hv = time.time()
         end_tot = time.time()
-        time_tot.append(end_tot - start_tot)
-        time_gen.append(end_gen - start_gen)
-        time_hv.append(end_hv - start_hv)
-        time_mcmc.append(-1.)
-        time_trail.append(-1.)
-        hv_list.append(hv)
+        iter_res['time_tot'].append(end_tot - start_tot)
+        iter_res['time_gen'].append(end_gen - start_gen)
+        iter_res['time_hv'].append(end_hv - start_hv)
+        iter_res['time_mcmc'].append(-1.)
+        iter_res['time_trail'].append(-1.)
+        iter_res['hv'].append(hv)
+        iter_res['last_call'].append(0)
+        iter_res['converged'].append((hv_pareto - hv) / hv_pareto)
+
         print(f"Initialized points, HV: {hv}")
+        list_dump = {
+            "experiment": experiment,
+            "HV_PARETO": hv_pareto,
+            "data": data,
+            "outcomes": outcomes,
+        }
+        list_dump.update(iter_res)
         with open(os.path.join(outdir, "ax_state_init.json"), 'wb') as handle:
-            list_dump = {"last_call": last_call,
-                         "experiment": experiment,
-                         "HV_PARETO": hv_pareto,
-                         "hv_list": hv_list,
-                         "data": data,
-                         "outcomes": outcomes,
-                         "time_tot": time_tot,
-                         "time_gen": time_gen,
-                         "time_hv": time_hv,
-                         "time_mcmc": time_mcmc,
-                         "time_trail": time_trail
-                         }
             pickle.dump(list_dump, handle, pickle.HIGHEST_PROTOCOL)
             print("saved initial generation file")
     if jsonFile:
         print("\n\n WARNING::YOU ARE LOADING AN EXISTING FILE: ", jsonFile, "\n\n")
         tmp_list = pickle.load(open(jsonFile, "rb"))
-        last_call = tmp_list["last_call"]
-        experiment = tmp_list["experiment"]
-        hv_pareto = tmp_list["HV_PARETO"]
-        hv_list = tmp_list["hv_list"]
-        hv = hv_list[-1]
-        data = tmp_list["data"]
-        outcomes = tmp_list["outcomes"]
-        time_tot = tmp_list["time_tot"]
-        time_gen = tmp_list["time_gen"]
-        time_hv = tmp_list["time_hv"]
-        time_mcmc = tmp_list["time_mcmc"]
-        time_trail = tmp_list["time_trail"]
+        experiment = tmp_list.pop('experiment')
+        hv_pareto = tmp_list.pop('HV_PARETO')
+        data = tmp_list.pop('data')
+        outcomes = tmp_list.pop('outcomes')
+        iter_res.update(tmp_list)
 
     tol = config["hv_tolerance"]
     max_calls = config["max_calls"]
-    converged = (hv_pareto - hv) / hv_pareto
-    converged_list.append(converged)
     check_imp = True
     roll = 30
-    roll2 = min(len(hv_list) - 1, 2 * roll)
-    if len(hv_list) > roll:
-        tmp_tol = 1. if hv_list[-roll] == 0. else abs((hv_list[-1] - hv_list[-roll]) / hv_list[-roll])
+    roll2 = min(len(iter_res['hv']) - 1, 2 * roll)
+    if len(iter_res['hv']) > roll:
+        tmp_tol = 1. if iter_res['hv'][-roll] == 0. else\
+            abs((iter_res['hv'][-1] - iter_res['hv'][-roll]) / iter_res['hv'][-roll])
 
         # atleast 5% improvement w.r.t. last 5 calls and last call is better than first call
         check_imp = (tmp_tol > 0.0001) or (
-                hv_list[-roll2] >= hv_list[-1])  # or (abs((hv_list[-1] - hv_list[1])/hv_list[1]) < 0.01)
+                iter_res['hv'][-roll2] >= iter_res['hv'][-1])  # or (abs((hv_list[-1] - hv_list[1])/hv_list[1]) < 0.01)
 
     if profiler:
-        Profile_data = {"time_tot": time_tot,
-                        "time_gen": time_gen,
-                        "time_hv": time_hv,
-                        "time_mcmc": time_mcmc,
-                        "time_trail": time_trail,
-                        "hv_list": hv_list,
-                        "converged_list": converged_list
-                        }
-        pd.DataFrame(Profile_data).to_csv(os.path.join(outdir, "profile_data.csv"))
+        pd.DataFrame(iter_res).to_csv(os.path.join(outdir, "profile_data.csv"))
     if doMonitor and jsonFile:
-        logMetrics = {f"Trail Exec (q = {BATCH_SIZE}) [s]": time_trail[-1],
-                      "HV": hv,
-                      "Increase in HV w.r.t true pareto": converged,
-                      "HV Calculation [s]": time_hv[-1],
-                      "Total time [s]": time_tot[-1],
-                      "iterations": last_call
+        logMetrics = {f"Trail Exec (q = {BATCH_SIZE}) [s]": iter_res['time_trail'][-1],
+                      "HV": iter_res['hv'][-1],
+                      "Increase in HV w.r.t true pareto": iter_res['converged'][-1],
+                      "HV Calculation [s]": iter_res['time_hv'][-1],
+                      "Total time [s]": iter_res['time_tot'][-1],
+                      "iterations": iter_res['last_call'][-1]
                       }
         MLTracker.log(logMetrics)
-    while converged > tol and last_call <= max_calls and check_imp:
+    while iter_res['converged'][-1] > tol and iter_res['last_call'][-1] <= max_calls and check_imp:
         start_tot = time.time()
         start_mcmc = time.time()
         model = Models.FULLYBAYESIANMOO(
@@ -323,63 +301,50 @@ if __name__ == "__main__":
         end_hv = time.time()
         end_tot = time.time()
 
-        last_call += 1
-        converged = (hv_pareto - hv) / hv_pareto
-        hv_list.append(hv)
-        if len(hv_list) > roll:
-            tmp_tol = 1. if (hv_list[-roll] == 0.) else abs((hv_list[-1] - hv_list[-roll]) / hv_list[-roll])
+        iter_res['last_call'].append(iter_res['last_call'][-1] + 1)
+        iter_res['converged'].append((hv_pareto - hv) / hv_pareto)
+        iter_res['hv'].append(hv)
+        if len(iter_res['hv']) > roll:
+            tmp_tol = 1. if (iter_res['hv'][-roll] == 0.) else\
+                abs((iter_res['hv'][-1] - iter_res['hv'][-roll]) / iter_res['hv'][-roll])
             # atleast 5% improvement w.r.t. last #roll calls and last call is better than first call
             check_imp = (tmp_tol > 0.0001) or (
-                    hv_list[-roll2] >= hv_list[-1])  # or (abs((hv_list[-1] - hv_list[1])/hv_list[-1]) < 0.01)
-        time_tot.append(end_tot - start_tot)
-        time_mcmc.append(end_mcmc - start_mcmc)
-        time_gen.append(end_gen - start_gen)
-        time_trail.append(end_trail - start_trail)
-        time_hv.append(end_hv - start_hv)
-        converged_list.append(converged)
+                    iter_res['hv'][-roll2] >= iter_res['hv'][-1])  # or (abs((hv_list[-1] - hv_list[1])/hv_list[-1]) < 0.01)
+        iter_res['time_tot'].append(end_tot - start_tot)
+        iter_res['time_mcmc'].append(end_mcmc - start_mcmc)
+        iter_res['time_gen'].append(end_gen - start_gen)
+        iter_res['time_trail'].append(end_trail - start_trail)
+        iter_res['time_hv'].append(end_hv - start_hv)
         roll2 += 1
 
         with open(os.path.join(outdir, optimInfo), "a") as f:
-            f.write(f"""Optimization call: {last_call}
-                        Optimization HV: {hv}
-                        Optimization Pareto HV - HV / Pareto HV: {converged:.4f}
-                        Optimization converged: {converged < tol}""")
+            f.write(f"""Optimization call: {iter_res['last_call'][-1]}
+                        Optimization HV: {iter_res['hv'][-1]}
+                        Optimization Pareto HV - HV / Pareto HV: {iter_res['converged'][-1]:.4f}
+                        Optimization converged: {iter_res['converged'][-1] < tol}""")
 
-        if last_call % save_every_n == 0:
-            with open(os.path.join(outdir, f'optim_iteration_{last_call}.json'), 'wb') as handle:
-                list_dump = {"last_call": last_call,
-                             "experiment": experiment,
-                             "HV_PARETO": hv_pareto,
-                             "hv_list": hv_list,
-                             "data": data,
-                             "outcomes": outcomes,
-                             "time_tot": time_tot,
-                             "time_gen": time_gen,
-                             "time_hv": time_hv,
-                             "time_mcmc": time_mcmc,
-                             "time_trail": time_trail
-                             }
+        if iter_res['last_call'][-1] % save_every_n == 0:
+            list_dump = {
+                "experiment": experiment,
+                "HV_PARETO": hv_pareto,
+                "data": data,
+                "outcomes": outcomes,
+            }
+            list_dump.update(iter_res)
+            with open(os.path.join(outdir, f"optim_iteration_{iter_res['last_call'][-1]}.json"), 'wb') as handle:
                 pickle.dump(list_dump, handle)
-                print(f"saved the file for {last_call} iteration")
+                print(f"saved the file for {iter_res['last_call'][-1]} iteration")
             if profiler:
-                Profile_data = {"time_tot": time_tot,
-                                "time_gen": time_gen,
-                                "time_hv": time_hv,
-                                "time_mcmc": time_mcmc,
-                                "time_trail": time_trail,
-                                "hv_list": hv_list,
-                                "converged_list": converged_list
-                                }
-                pd.DataFrame(Profile_data).to_csv(os.path.join(outdir, "profile_data.csv"))
+                pd.DataFrame(iter_res).to_csv(os.path.join(outdir, "profile_data.csv"))
             if doMonitor:
-                logMetrics = {"MCMC Training [s]": time_mcmc[-1],
-                              f"Gen Acq func (q = {BATCH_SIZE}) [s]": time_gen[-1],
-                              f"Trail Exec (q = {BATCH_SIZE}) [s]": time_trail[-1],
-                              "HV": hv,
-                              "Increase in HV w.r.t true pareto": converged,
-                              "HV Calculation [s]": time_hv[-1],
-                              "Total time [s]": time_tot[-1],
-                              "iterations": last_call
+                logMetrics = {"MCMC Training [s]": iter_res['time_mcmc'][-1],
+                              f"Gen Acq func (q = {BATCH_SIZE}) [s]": iter_res['time_gen'][-1],
+                              f"Trail Exec (q = {BATCH_SIZE}) [s]": iter_res['time_trail'][-1],
+                              "HV": iter_res['hv'][-1],
+                              "Increase in HV w.r.t true pareto": iter_res['converged'][-1],
+                              "HV Calculation [s]": iter_res['time_hv'][-1],
+                              "Total time [s]": iter_res['time_tot'][-1],
+                              "iterations": iter_res['last_call'][-1]
                               }
                 MLTracker.log(logMetrics)
     if doMonitor:
