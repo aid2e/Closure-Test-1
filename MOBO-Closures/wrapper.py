@@ -28,12 +28,17 @@ from textwrap import dedent
 
 class Tracker(ABC):
     def __init__(self, conf):
-        pass
+        self.save_every_n = conf["save_every_n_call"]
 
     def write_problem_summary(self, hv_pareto, hv_npoints, ref_point):
         pass
 
     def log_iter_results(self, res):
+        if not res['last_call'][-1] % self.save_every_n == 0:
+            return
+        self._log_iter_results(res)
+
+    def _log_iter_results(self, res):
         pass
 
     def finalize(self):
@@ -42,10 +47,29 @@ class Tracker(ABC):
 
 class LocalTracker(Tracker):
     def __init__(self, conf):
-        out_dir = config["OUTPUT_DIR"]
-        if not os.path.exists(out_dir):
-            os.makedirs(out_dir)
-        self.full_path = os.path.join(out_dir, "optimInfo.txt")
+        super().__init__(conf)
+        self.out_dir = conf["OUTPUT_DIR"]
+        if not os.path.exists(self.out_dir):
+            os.makedirs(self.out_dir)
+
+
+class JsonTracker(LocalTracker):
+    pass
+
+
+class CsvTracker(LocalTracker):
+    def __init__(self, conf):
+        super().__init__(conf)
+        self.full_path = os.path.join(self.out_dir, "profile_data.csv")
+
+    def _log_iter_results(self, res):
+        pd.DataFrame(res).to_csv(self.full_path)
+
+
+class TxtTracker(LocalTracker):
+    def __init__(self, conf):
+        super().__init__(conf)
+        self.full_path = os.path.join(self.out_dir, "optimInfo.txt")
         optimization_info = dedent(f"""
             Optimization Info with name: {conf["name"]}
             Optimization has {conf["n_objectives"]} objectives
@@ -67,7 +91,7 @@ class LocalTracker(Tracker):
             Problem Pareto Front Hypervolume: {hv_pareto}
             Problem Random Points Hypervolume: {hv_npoints}"""))
 
-    def log_iter_results(self, res):
+    def _log_iter_results(self, res):
         with open(self.full_path, "a") as f:
             f.write(dedent(f"""\
             Optimization call: {res['last_call'][-1]}
@@ -114,7 +138,7 @@ class WandBTracker(Tracker):
             "ref_point": str(ref_point.tolist())
         })
 
-    def log_iter_results(self, res):
+    def _log_iter_results(self, res):
         bs = self._tracker.config['BATCH_SIZE']
         self._tracker.log({
             "MCMC Training [s]": iter_res['time_mcmc'][-1],
@@ -156,13 +180,14 @@ if __name__ == "__main__":
     # READ SOME INFO 
     config = read_json_file(args.config)
 
-    my_trackers = [LocalTracker(config)]
+    my_trackers = [TxtTracker(config)]
+    if args.profile:
+        my_trackers.append(CsvTracker(config))
 
     jsonFile = args.json_file
-    profiler = args.profile
     outdir = config["OUTPUT_DIR"]
     save_every_n = config["save_every_n_call"]
-    doMonitor = (True if config.get("WandB_params") else False) and profiler
+    doMonitor = (True if config.get("WandB_params") else False) and args.profile
     if doMonitor:
         my_trackers.append(WandBTracker(config, args.secret_file))
 
@@ -322,9 +347,6 @@ if __name__ == "__main__":
     for tracker in my_trackers:
         tracker.log_iter_results(iter_res)
 
-    if profiler:
-        pd.DataFrame(iter_res).to_csv(os.path.join(outdir, "profile_data.csv"))
-
     while iter_res['converged'][-1] > tol and iter_res['last_call'][-1] <= max_calls and check_imp:
         start_tot = time.time()
         start_mcmc = time.time()
@@ -375,6 +397,9 @@ if __name__ == "__main__":
         iter_res['time_hv'].append(end_hv - start_hv)
         roll2 += 1
 
+        for tracker in my_trackers:
+            tracker.log_iter_results(iter_res)
+
         if iter_res['last_call'][-1] % save_every_n == 0:
             list_dump = {
                 "experiment": experiment,
@@ -386,11 +411,6 @@ if __name__ == "__main__":
             with open(os.path.join(outdir, f"optim_iteration_{iter_res['last_call'][-1]}.json"), 'wb') as handle:
                 pickle.dump(list_dump, handle)
                 print(f"saved the file for {iter_res['last_call'][-1]} iteration")
-            if profiler:
-                pd.DataFrame(iter_res).to_csv(os.path.join(outdir, "profile_data.csv"))
-
-            for tracker in my_trackers:
-                tracker.log_iter_results(iter_res)
 
     for tracker in my_trackers:
         tracker.finalize()
