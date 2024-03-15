@@ -1,6 +1,6 @@
 from ProjectUtils.config_editor import *
 from ProjectUtils.mobo_utilities import *
-from ProjectUtils.progress_loggers import *
+from ProjectUtils.progress_trackers import *
 
 import os, pickle, torch, argparse, datetime
 import time
@@ -54,21 +54,20 @@ if __name__ == "__main__":
         print("Please set WANDB_API_KEY in your environment variables or include a file named secrets.key in the "
               "same directory as this script.")
         sys.exit()
-    os.environ["WANDB_API_KEY"] = ce.read_json_file(args.secret_file)["WANDB_API_KEY"] if not os.getenv(
+    os.environ["WANDB_API_KEY"] = read_json_file(args.secret_file)["WANDB_API_KEY"] if not os.getenv(
         "WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
 
-    my_trackers = [TxtTracker(config)]
+    tracker_group = TrackerGroup([TxtTracker(config)])
     if args.profile:
-        my_trackers.append(CsvTracker(config))
+        print('appending csv tracker')
+        tracker_group.append(CsvTracker(config))
 
     jsonFile = args.json_file
     outdir = config["OUTPUT_DIR"]
-    save_every_n = config["save_every_n_call"]
-    doMonitor = (True if config.get("WandB_params") else False) and args.profile
-    if doMonitor:
-        my_trackers.append(WandBTracker(config))
 
-    optimInfo = "optimInfo.txt" if not jsonFile else "optimInfo_continued.txt"
+    if (True if config.get("WandB_params") else False) and args.profile:
+        tracker_group.append(WandBTracker(config))
+
     d = config["n_design_params"]
     M = config["n_objectives"]
     isGPU = torch.cuda.is_available()
@@ -97,9 +96,7 @@ if __name__ == "__main__":
                                        ).compute_hypervolume().item()
     print(f"Random Points Hypervolume: {hv_npoints}")
 
-    for tracker in my_trackers:
-        tracker.write_problem_summary(hv_pareto, hv_npoints, problem.ref_point)
-
+    tracker_group.write_problem_summary(hv_pareto, hv_npoints, problem.ref_point)
 
     @glob_fun
     def ftot(x):
@@ -222,8 +219,7 @@ if __name__ == "__main__":
         check_imp = (tmp_tol > 0.0001) or (
                 iter_res['hv'][-roll2] >= iter_res['hv'][-1])  # or (abs((hv_list[-1] - hv_list[1])/hv_list[1]) < 0.01)
 
-    for tracker in my_trackers:
-        tracker.log_iter_results(iter_res)
+    tracker_group.log_iter_results(iter_res)
 
     while iter_res['converged'][-1] > tol and iter_res['last_call'][-1] <= max_calls and check_imp:
         start_tot = time.time()
@@ -276,8 +272,6 @@ if __name__ == "__main__":
         iter_res['time_hv'].append(end_hv - start_hv)
         roll2 += 1
 
-        for tracker in my_trackers:
-            tracker.log_iter_results(iter_res)
+        tracker_group.log_iter_results(iter_res)
 
-    for tracker in my_trackers:
-        tracker.finalize()
+    tracker_group.finalize()
