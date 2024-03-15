@@ -22,7 +22,76 @@ from botorch.test_functions.multi_objective import DTLZ2
 import wandb
 
 from collections import defaultdict
-from copy import deepcopy
+from abc import ABC
+
+
+class Tracker(ABC):
+    def __init__(self, conf):
+        pass
+
+    def write_problem_summary(self, hv_pareto, hv_npoints, ref_point):
+        pass
+
+    def log_iter_results(self, res):
+        pass
+
+    def finalize(self):
+        pass
+
+
+class WandBTracker(Tracker):
+    def __init__(self, conf, secret_file):
+        super().__init__(conf)
+        if not os.getenv("WANDB_API_KEY") and not os.path.exists(secret_file):
+            print("Please set WANDB_API_KEY in your environment variables or include a file named secrets.key in the "
+                  "same directory as this script.")
+            sys.exit()
+        os.environ["WANDB_API_KEY"] = read_json_file(args.secret_file)["WANDB_API_KEY"] if not os.getenv(
+            "WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
+        wandb.login(anonymous='never', key=os.environ['WANDB_API_KEY'], relogin=True)
+        track_conf = {k: conf[k] for k in ["n_design_params", "n_objectives"]}
+        self._tracker = wandb.init(config=track_conf, **conf["WandB_params"])
+        num_samples = 64 if (not config.get("MOBO_params")) else config["MOBO_params"]["num_samples"]
+        warmup_steps = 128 if (not config.get("MOBO_params")) else config["MOBO_params"]["warmup_steps"]
+        self._tracker.config.update({
+            "BATCH_SIZE": config["n_batch"],
+            "N_BATCH": config["n_calls"],
+            "num_samples": num_samples,
+            "warmup_steps": warmup_steps
+        })
+        self._tracker.define_metric("iterations")
+        log_metrics = ["MCMC Training [s]",
+                      f"Gen Acq func (q = {config['n_batch']}) [s]",
+                      f"Trail Exec (q = {config['n_batch']}) [s]",
+                      "HV",
+                      "Increase in HV w.r.t true pareto",
+                      "HV Calculation [s]",
+                      "Total time [s]"]
+        for lm in log_metrics:
+            self._tracker.define_metric(lm, step_metric="iterations")
+
+    def write_problem_summary(self, hv_pareto, hv_npoints, ref_point):
+        self._tracker.summary.update({
+            "HV": hv_pareto,
+            "HV_RandomPoints": hv_npoints,
+            "ref_point": str(ref_point.tolist())
+        })
+
+    def log_iter_results(self, res):
+        bs = self._tracker.config['BATCH_SIZE']
+        self._tracker.log({
+            "MCMC Training [s]": iter_res['time_mcmc'][-1],
+            f"Gen Acq func (q = {bs}) [s]": iter_res['time_gen'][-1],
+            f"Trail Exec (q = {bs}) [s]": res['time_trail'][-1],
+            "HV": res['hv'][-1],
+            "Increase in HV w.r.t true pareto": res['converged'][-1],
+            "HV Calculation [s]": res['time_hv'][-1],
+            "Total time [s]": res['time_tot'][-1],
+            "iterations": res['last_call'][-1]
+        })
+
+    def finalize(self):
+        self._tracker.finish()
 
 
 def RunProblem(problem, x, kwargs):
@@ -49,23 +118,16 @@ if __name__ == "__main__":
 
     # READ SOME INFO 
     config = read_json_file(args.config)
+
+    my_trackers = []
+
     jsonFile = args.json_file
     profiler = args.profile
     outdir = config["OUTPUT_DIR"]
     save_every_n = config["save_every_n_call"]
     doMonitor = (True if config.get("WandB_params") else False) and profiler
-    MLTracker = None
     if doMonitor:
-        if not os.getenv("WANDB_API_KEY") and not os.path.exists(args.secret_file):
-            print("Please set WANDB_API_KEY in your environment variables or include a file named secrets.key in the "
-                  "same directory as this script.")
-            sys.exit()
-        else:
-            os.environ["WANDB_API_KEY"] = read_json_file(args.secret_file)["WANDB_API_KEY"] if not os.getenv(
-                "WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
-            wandb.login(anonymous='never', key=os.environ['WANDB_API_KEY'], relogin=True)
-            track_config = {"n_design_params": config["n_design_params"], "n_objectives": config["n_objectives"]}
-            MLTracker = wandb.init(config=track_config, **config["WandB_params"])
+        my_trackers.append(WandBTracker(config, args.secret_file))
 
     optimInfo = "optimInfo.txt" if not jsonFile else "optimInfo_continued.txt"
     if not os.path.exists(outdir):
@@ -111,15 +173,14 @@ if __name__ == "__main__":
                                        ).compute_hypervolume().item()
     print(f"Random Points Hypervolume: {hv_npoints}")
 
-    if doMonitor:
-        MLTracker.summary["HV"] = hv_pareto
-        MLTracker.summary["HV_RandomPoints"] = hv_npoints
-        MLTracker.summary["ref_point"] = str(problem.ref_point.tolist())
+    for tracker in my_trackers:
+        tracker.write_problem_summary(hv_pareto, hv_npoints, problem.ref_point)
 
     with open(os.path.join(outdir, optimInfo), "a") as f:
-        f.write(f"""Problem Reference points: {problem.ref_point}
-                    Problem Pareto Front Hypervolume: {hv_pareto}
-                    Problem Random Points Hypervolume: {hv_npoints}""")
+        f.write(f"""\
+        Problem Reference points: {problem.ref_point}
+        Problem Pareto Front Hypervolume: {hv_pareto}
+        Problem Random Points Hypervolume: {hv_npoints}""")
 
     @glob_fun
     def ftot(x):
@@ -179,21 +240,6 @@ if __name__ == "__main__":
     N_BATCH = config["n_calls"]
     num_samples = 64 if (not config.get("MOBO_params")) else config["MOBO_params"]["num_samples"]
     warmup_steps = 128 if (not config.get("MOBO_params")) else config["MOBO_params"]["warmup_steps"]
-    if doMonitor:
-        MLTracker.config["BATCH_SIZE"] = BATCH_SIZE
-        MLTracker.config["N_BATCH"] = N_BATCH
-        MLTracker.config["num_samples"] = num_samples
-        MLTracker.config["warmup_steps"] = warmup_steps
-        MLTracker.define_metric("iterations")
-        logMetrics = ["MCMC Training [s]",
-                      f"Gen Acq func (q = {BATCH_SIZE}) [s]",
-                      f"Trail Exec (q = {BATCH_SIZE}) [s]",
-                      "HV",
-                      "Increase in HV w.r.t true pareto",
-                      "HV Calculation [s]",
-                      "Total time [s]"]
-        for l in logMetrics:
-            MLTracker.define_metric(l, step_metric="iterations")
 
     iter_res = defaultdict(list)
     model = None
@@ -256,17 +302,12 @@ if __name__ == "__main__":
         check_imp = (tmp_tol > 0.0001) or (
                 iter_res['hv'][-roll2] >= iter_res['hv'][-1])  # or (abs((hv_list[-1] - hv_list[1])/hv_list[1]) < 0.01)
 
+    for tracker in my_trackers:
+        tracker.log_iter_results(iter_res)
+
     if profiler:
         pd.DataFrame(iter_res).to_csv(os.path.join(outdir, "profile_data.csv"))
-    if doMonitor and jsonFile:
-        logMetrics = {f"Trail Exec (q = {BATCH_SIZE}) [s]": iter_res['time_trail'][-1],
-                      "HV": iter_res['hv'][-1],
-                      "Increase in HV w.r.t true pareto": iter_res['converged'][-1],
-                      "HV Calculation [s]": iter_res['time_hv'][-1],
-                      "Total time [s]": iter_res['time_tot'][-1],
-                      "iterations": iter_res['last_call'][-1]
-                      }
-        MLTracker.log(logMetrics)
+
     while iter_res['converged'][-1] > tol and iter_res['last_call'][-1] <= max_calls and check_imp:
         start_tot = time.time()
         start_mcmc = time.time()
@@ -336,16 +377,9 @@ if __name__ == "__main__":
                 print(f"saved the file for {iter_res['last_call'][-1]} iteration")
             if profiler:
                 pd.DataFrame(iter_res).to_csv(os.path.join(outdir, "profile_data.csv"))
-            if doMonitor:
-                logMetrics = {"MCMC Training [s]": iter_res['time_mcmc'][-1],
-                              f"Gen Acq func (q = {BATCH_SIZE}) [s]": iter_res['time_gen'][-1],
-                              f"Trail Exec (q = {BATCH_SIZE}) [s]": iter_res['time_trail'][-1],
-                              "HV": iter_res['hv'][-1],
-                              "Increase in HV w.r.t true pareto": iter_res['converged'][-1],
-                              "HV Calculation [s]": iter_res['time_hv'][-1],
-                              "Total time [s]": iter_res['time_tot'][-1],
-                              "iterations": iter_res['last_call'][-1]
-                              }
-                MLTracker.log(logMetrics)
-    if doMonitor:
-        MLTracker.finish()
+
+            for tracker in my_trackers:
+                tracker.log_iter_results(iter_res)
+
+    for tracker in my_trackers:
+        tracker.finalize()
