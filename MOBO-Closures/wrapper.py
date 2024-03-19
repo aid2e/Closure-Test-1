@@ -61,9 +61,6 @@ if __name__ == "__main__":
     if args.profile:
         tracker_group.append(CsvTracker(config))
 
-    jsonFile = args.json_file
-    outdir = config["OUTPUT_DIR"]
-
     if config.get("WandB_params") and args.profile:
         tracker_group.append(WandBTracker(config))
 
@@ -159,7 +156,7 @@ if __name__ == "__main__":
     iter_res = defaultdict(list)
     model = None
 
-    if not jsonFile:
+    if not args.json_file:
         start_tot = time.time()
         experiment = build_experiment(search_space, optimization_config)
         start_gen = time.time()
@@ -193,12 +190,12 @@ if __name__ == "__main__":
             "outcomes": outcomes,
         }
         list_dump.update(iter_res)
-        with open(os.path.join(outdir, "ax_state_init.json"), 'wb') as handle:
+        with open(os.path.join(config["OUTPUT_DIR"], "ax_state_init.json"), 'wb') as handle:
             pickle.dump(list_dump, handle, pickle.HIGHEST_PROTOCOL)
             print("saved initial generation file")
-    if jsonFile:
-        print("\n\n WARNING::YOU ARE LOADING AN EXISTING FILE: ", jsonFile, "\n\n")
-        tmp_list = pickle.load(open(jsonFile, "rb"))
+    if args.json_file:
+        print("\n\n WARNING::YOU ARE LOADING AN EXISTING FILE: ", args.json_file, "\n\n")
+        tmp_list = pickle.load(open(args.json_file, "rb"))
         experiment = tmp_list.pop('experiment')
         hv_pareto = tmp_list.pop('HV_PARETO')
         data = tmp_list.pop('data')
