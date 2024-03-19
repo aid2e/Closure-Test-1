@@ -5,6 +5,7 @@ import datetime
 import pandas as pd
 from abc import ABC
 from textwrap import dedent
+from . import config_editor as ce
 
 
 class Tracker(ABC):
@@ -35,7 +36,6 @@ class CsvTracker(LocalTracker):
         self.full_path = os.path.join(self.out_dir, "profile_data.csv")
 
     def log_iter_results(self, res):
-        print('CsvTracker.log_iter_res()')
         pd.DataFrame(res).to_csv(self.full_path)
 
 
@@ -76,27 +76,35 @@ class TxtTracker(LocalTracker):
 class WandBTracker(Tracker):
     def __init__(self, conf):
         super().__init__(conf)
-        wandb.login(anonymous='never', key=os.environ['WANDB_API_KEY'], relogin=True)
-        track_conf = {k: conf[k] for k in ["n_design_params", "n_objectives"]}
-        self._tracker = wandb.init(config=track_conf, **conf["WandB_params"])
+        if not os.getenv("WANDB_API_KEY") and not os.path.exists(conf['secret_file']):
+            print("Please set WANDB_API_KEY in your environment variables or include a file named secrets.key in the "
+                  "same directory as this script.")
+            exit(1)
+        api_key = os.environ.get('WANDB_API_KEY', ce.read_json_file(conf['secret_file'])['WANDB_API_KEY'])
+        wandb.login(anonymous='never', key=api_key, relogin=True)
         num_samples = 64 if (not conf.get("MOBO_params")) else conf["MOBO_params"]["num_samples"]
         warmup_steps = 128 if (not conf.get("MOBO_params")) else conf["MOBO_params"]["warmup_steps"]
-        self._tracker.config.update({
+        tracker_conf = {
+            "n_design_params": conf["n_design_params"],
+            "n_objectives": conf["n_objectives"],
             "BATCH_SIZE": conf["n_batch"],
             "N_BATCH": conf["n_calls"],
             "num_samples": num_samples,
             "warmup_steps": warmup_steps
-        })
+        }
+        self._tracker = wandb.init(config=tracker_conf, **conf["WandB_params"])
         self._tracker.define_metric("iterations")
-        log_metrics = ["MCMC Training [s]",
-                       f"Gen Acq func (q = {conf['n_batch']}) [s]",
-                       f"Trail Exec (q = {conf['n_batch']}) [s]",
-                       "HV",
-                       "Increase in HV w.r.t true pareto",
-                       "HV Calculation [s]",
-                       "Total time [s]"]
-        for lm in log_metrics:
-            self._tracker.define_metric(lm, step_metric="iterations")
+        self.metrics_dict = {
+            "MCMC Training [s]": 'time_mcmc',
+            f"Gen Acq func (q = {conf['n_batch']}) [s]": 'time_gen',
+            f"Trail Exec (q = {conf['n_batch']}) [s]": 'time_trail',
+            "HV": 'hv',
+            "Increase in HV w.r.t true pareto": 'converged',
+            "HV Calculation [s]": 'time_hv',
+            "Total time [s]": 'time_tot'
+        }
+        for m in self.metrics_dict.keys():
+            self._tracker.define_metric(m, step_metric="iterations")
 
     def write_problem_summary(self, hv_pareto, hv_npoints, ref_point):
         self._tracker.summary.update({
@@ -106,17 +114,9 @@ class WandBTracker(Tracker):
         })
 
     def log_iter_results(self, res):
-        bs = self._tracker.config['BATCH_SIZE']
-        self._tracker.log({
-            "MCMC Training [s]": res['time_mcmc'][-1],
-            f"Gen Acq func (q = {bs}) [s]": res['time_gen'][-1],
-            f"Trail Exec (q = {bs}) [s]": res['time_trail'][-1],
-            "HV": res['hv'][-1],
-            "Increase in HV w.r.t true pareto": res['converged'][-1],
-            "HV Calculation [s]": res['time_hv'][-1],
-            "Total time [s]": res['time_tot'][-1],
-            "iterations": res['last_call'][-1]
-        })
+        log_dict = {k: res[v][-1] for k, v in self.metrics_dict.items()}
+        log_dict['iterations'] = res['last_call'][-1]
+        self._tracker.log(log_dict)
 
     def finalize(self):
         self._tracker.finish()

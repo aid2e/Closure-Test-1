@@ -47,15 +47,10 @@ if __name__ == "__main__":
 
     # READ SOME INFO 
     config = read_json_file(args.config)
+
     # Dynamically add stuff to config
     config['is_gpu'] = torch.cuda.is_available()
-
-    if not os.getenv("WANDB_API_KEY") and not os.path.exists(args.secret_file):
-        print("Please set WANDB_API_KEY in your environment variables or include a file named secrets.key in the "
-              "same directory as this script.")
-        sys.exit()
-    os.environ["WANDB_API_KEY"] = read_json_file(args.secret_file)["WANDB_API_KEY"] if not os.getenv(
-        "WANDB_API_KEY") else os.environ["WANDB_API_KEY"]
+    config['secret_file'] = args.secret_file
 
     tracker_group = TrackerGroup([TxtTracker(config)])
     if args.profile:
