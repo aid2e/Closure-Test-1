@@ -25,6 +25,62 @@ def RunProblem(problem, x, kwargs):
     return problem(torch.tensor(x, **kwargs).clamp(0.0, 1.0))
 
 
+@glob_fun
+def ftot(x):
+    return RunProblem(problem, x, tkwargs)
+
+
+def f1(xdic):
+    x = tuple(xdic[k] for k in xdic.keys())
+    return float(ftot(x)[0])
+
+
+def f2(xdic):
+    x = tuple(xdic[k] for k in xdic.keys())
+    return float(ftot(x)[1])
+
+
+def f3(xdic):
+    x = tuple(xdic[k] for k in xdic.keys())
+    return float(ftot(x)[2])
+
+
+def f4(xdic):
+    x = tuple(xdic[k] for k in xdic.keys())
+    return float(ftot(x)[3])
+
+
+def build_experiment_from_config(conf, ref_point, tkwargs):
+    d = conf["n_design_params"]
+    M = conf["n_objectives"]
+
+    names = ["a", "b", "c", "d"]
+    functions = [f1, f2, f3, f4]
+    metrics = []
+
+    for name, function in zip(names[:M], functions[:M]):
+        metrics.append(
+            GenericNoisyFunctionMetric(
+                name=name, f=function, noise_sd=0.0, lower_is_better=False
+            )
+        )
+    mo = MultiObjective(
+        objectives=[Objective(m) for m in metrics],
+    )
+    objective_thresholds = [
+        ObjectiveThreshold(metric=metric, bound=val, relative=False)
+        for metric, val in zip(mo.metrics, ref_point.to(tkwargs["device"]))
+    ]
+    optimization_config = MultiObjectiveOptimizationConfig(objective=mo, objective_thresholds=objective_thresholds)
+
+    search_space = SearchSpace(
+        parameters=[RangeParameter(name=f"x{i}", lower=0, upper=1, parameter_type=ParameterType.FLOAT)
+                    for i in range(d)]
+    )
+
+    return build_experiment(search_space, optimization_config)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Optimization Closure Test-1")
     parser.add_argument('-c', '--config',
@@ -47,7 +103,6 @@ if __name__ == "__main__":
     config = read_json_file(args.config)
 
     # Dynamically add stuff to config
-    config['is_gpu'] = torch.cuda.is_available()
     config['secret_file'] = args.secret_file
 
     tracker_group = TrackerGroup([TxtTracker(config)])
@@ -62,10 +117,10 @@ if __name__ == "__main__":
 
     tkwargs = {
         "dtype": torch.double,
-        "device": torch.device("cuda" if config['is_gpu'] else "cpu"),
+        "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     }
 
-    print("Running on GPU? ", config['is_gpu'])
+    print("Running on GPU? ", torch.cuda.is_available())
 
     problem = DTLZ2(dim=d, num_objectives=M, negate=True).to(**tkwargs)
 
@@ -87,69 +142,13 @@ if __name__ == "__main__":
 
     tracker_group.write_problem_summary(hv_pareto, hv_npoints, ref_point)
 
-    @glob_fun
-    def ftot(x):
-        return RunProblem(problem, x, tkwargs)
-
-
-    def f1(xdic):
-        x = tuple(xdic[k] for k in xdic.keys())
-        return float(ftot(x)[0])
-
-
-    def f2(xdic):
-        x = tuple(xdic[k] for k in xdic.keys())
-        return float(ftot(x)[1])
-
-
-    def f3(xdic):
-        x = tuple(xdic[k] for k in xdic.keys())
-        return float(ftot(x)[2])
-
-
-    def f4(xdic):
-        x = tuple(xdic[k] for k in xdic.keys())
-        return float(ftot(x)[3])
-
-
-    search_space = SearchSpace(
-        parameters=[
-            RangeParameter(name=f"x{i}",
-                           lower=0, upper=1,
-                           parameter_type=ParameterType.FLOAT)
-            for i in range(d)],
-    )
-
-    names = ["a", "b", "c", "d"]
-    functions = [f1, f2, f3, f4]
-    metrics = []
-
-    for name, function in zip(names[:M], functions[:M]):
-        metrics.append(
-            GenericNoisyFunctionMetric(
-                name=name, f=function, noise_sd=0.0, lower_is_better=False
-            )
-        )
-    mo = MultiObjective(
-        objectives=[Objective(m) for m in metrics],
-    )
-    objective_thresholds = [
-        ObjectiveThreshold(metric=metric, bound=val, relative=False)
-        for metric, val in zip(mo.metrics, ref_point.to(tkwargs["device"]))
-    ]
-    optimization_config = MultiObjectiveOptimizationConfig(objective=mo,
-                                                           objective_thresholds=objective_thresholds, )
-    N_INIT = max(config["n_initial_points"], M * (d + 1))
-    num_samples = 64 if (not config.get("MOBO_params")) else config["MOBO_params"]["num_samples"]
-    warmup_steps = 128 if (not config.get("MOBO_params")) else config["MOBO_params"]["warmup_steps"]
-
     iter_res = defaultdict(list)
-    model = None
 
     if not args.json_file:
         start_tot = time.time()
-        experiment = build_experiment(search_space, optimization_config)
+        experiment = build_experiment_from_config(config, ref_point, tkwargs)
         start_gen = time.time()
+        N_INIT = max(config["n_initial_points"], M * (d + 1))
         data = initialize_experiment(experiment, N_INIT)
         end_gen = time.time()
         start_hv = time.time()
@@ -199,6 +198,9 @@ if __name__ == "__main__":
 
     tracker_group.log_iter_results(iter_res)
 
+    num_samples = 64 if (not config.get("MOBO_params")) else config["MOBO_params"]["num_samples"]
+    warmup_steps = 128 if (not config.get("MOBO_params")) else config["MOBO_params"]["warmup_steps"]
+
     while iter_res['converged'][-1] > tol and iter_res['last_call'][-1] <= max_calls and check_imp:
         start_tot = time.time()
         start_mcmc = time.time()
@@ -236,7 +238,8 @@ if __name__ == "__main__":
                 abs((iter_res['hv'][-1] - iter_res['hv'][-roll]) / iter_res['hv'][-roll])
             # atleast 5% improvement w.r.t. last #roll calls and last call is better than first call
             check_imp = (tmp_tol > 0.0001) or (
-                    iter_res['hv'][-roll2] >= iter_res['hv'][-1])  # or (abs((hv_list[-1] - hv_list[1])/hv_list[-1]) < 0.01)
+                    iter_res['hv'][-roll2] >= iter_res['hv'][
+                -1])  # or (abs((hv_list[-1] - hv_list[1])/hv_list[-1]) < 0.01)
         iter_res['time_tot'].append(end_tot - start_tot)
         iter_res['time_mcmc'].append(end_mcmc - start_mcmc)
         iter_res['time_gen'].append(end_gen - start_gen)
