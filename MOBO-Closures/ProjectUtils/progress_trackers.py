@@ -97,7 +97,7 @@ class WandBTracker(Tracker):
         self.metrics_dict = {
             "MCMC Training [s]": 'time_mcmc',
             f"Gen Acq func (q = {conf['n_batch']}) [s]": 'time_gen',
-            f"Trail Exec (q = {conf['n_batch']}) [s]": 'time_trail',
+            f"Trail Exec (q = {conf['n_batch']}) [s]": 'time_trial',
             "HV": 'hv',
             "Increase in HV w.r.t true pareto": 'converged',
             "HV Calculation [s]": 'time_hv',
