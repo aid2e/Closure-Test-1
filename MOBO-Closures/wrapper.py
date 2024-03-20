@@ -59,13 +59,13 @@ if __name__ == "__main__":
 
     d = config["n_design_params"]
     M = config["n_objectives"]
-    isGPU = torch.cuda.is_available()
+
     tkwargs = {
         "dtype": torch.double,
-        "device": torch.device("cuda" if isGPU else "cpu"),
+        "device": torch.device("cuda" if config['is_gpu'] else "cpu"),
     }
 
-    print("Running on GPU? ", isGPU)
+    print("Running on GPU? ", config['is_gpu'])
 
     problem = DTLZ2(dim=d, num_objectives=M, negate=True).to(**tkwargs)
 
