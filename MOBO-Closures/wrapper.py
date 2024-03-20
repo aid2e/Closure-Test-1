@@ -119,7 +119,6 @@ if __name__ == "__main__":
                            parameter_type=ParameterType.FLOAT)
             for i in range(d)],
     )
-    param_names = [f"x{i}" for i in range(d)]
 
     names = ["a", "b", "c", "d"]
     functions = [f1, f2, f3, f4]
