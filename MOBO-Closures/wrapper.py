@@ -143,8 +143,6 @@ if __name__ == "__main__":
     optimization_config = MultiObjectiveOptimizationConfig(objective=mo,
                                                            objective_thresholds=objective_thresholds, )
     N_INIT = max(config["n_initial_points"], M * (d + 1))
-    BATCH_SIZE = config["n_batch"]
-    N_BATCH = config["n_calls"]
     num_samples = 64 if (not config.get("MOBO_params")) else config["MOBO_params"]["num_samples"]
     warmup_steps = 128 if (not config.get("MOBO_params")) else config["MOBO_params"]["warmup_steps"]
 
@@ -219,7 +217,7 @@ if __name__ == "__main__":
         )
         end_mcmc = time.time()
         start_gen = time.time()
-        generator_run = model.gen(BATCH_SIZE)
+        generator_run = model.gen(config["n_batch"])
         end_gen = time.time()
         start_trail = time.time()
         trial = experiment.new_batch_trial(generator_run=generator_run)
