@@ -5,11 +5,9 @@ from ProjectUtils.progress_trackers import *
 import os, pickle, torch, argparse, datetime
 import time
 
-import pandas as pd
 from ax import *
 
 from ax.metrics.noisy_function import GenericNoisyFunctionMetric
-from ax.service.utils.report_utils import exp_to_df
 
 # Model registry for creating multi-objective optimization models.
 from ax.modelbridge.registry import Models
