@@ -71,23 +71,23 @@ if __name__ == "__main__":
 
     problem = DTLZ2(dim=d, num_objectives=M, negate=True).to(**tkwargs)
 
-    problem.ref_point = torch.tensor([-max(1.1, d / 10.) for _ in range(M)], **tkwargs)
+    ref_point = torch.tensor([-max(1.1, d / 10.) for _ in range(M)], **tkwargs)
 
-    print("Problem Reference points : ", problem.ref_point)
+    print("Problem Reference points : ", ref_point)
 
     NPoints = 10000
     pareto_fronts = problem.gen_pareto_front(NPoints // 10)
-    hv_pareto = DominatedPartitioning(ref_point=problem.ref_point,
+    hv_pareto = DominatedPartitioning(ref_point=ref_point,
                                       Y=pareto_fronts
                                       ).compute_hypervolume().item()
     print(f"Pareto Front Hypervolume: {hv_pareto}")
     n_points = problem(torch.rand(NPoints * d, **tkwargs).reshape(NPoints, d))
-    hv_npoints = DominatedPartitioning(ref_point=problem.ref_point,
+    hv_npoints = DominatedPartitioning(ref_point=ref_point,
                                        Y=n_points
                                        ).compute_hypervolume().item()
     print(f"Random Points Hypervolume: {hv_npoints}")
 
-    tracker_group.write_problem_summary(hv_pareto, hv_npoints, problem.ref_point)
+    tracker_group.write_problem_summary(hv_pareto, hv_npoints, ref_point)
 
     @glob_fun
     def ftot(x):
@@ -138,7 +138,7 @@ if __name__ == "__main__":
     )
     objective_thresholds = [
         ObjectiveThreshold(metric=metric, bound=val, relative=False)
-        for metric, val in zip(mo.metrics, problem.ref_point.to(tkwargs["device"]))
+        for metric, val in zip(mo.metrics, ref_point.to(tkwargs["device"]))
     ]
     optimization_config = MultiObjectiveOptimizationConfig(objective=mo,
                                                            objective_thresholds=objective_thresholds, )
@@ -157,14 +157,8 @@ if __name__ == "__main__":
         start_gen = time.time()
         data = initialize_experiment(experiment, N_INIT)
         end_gen = time.time()
-        exp_df = exp_to_df(experiment)
-        outcomes = torch.tensor(exp_df[names[:M]].values, **tkwargs)
         start_hv = time.time()
-        partitioning = DominatedPartitioning(ref_point=problem.ref_point, Y=outcomes)
-        try:
-            hv = partitioning.compute_hypervolume().item()
-        except:
-            hv = 0.
+        hv = get_hypervolume(experiment, ref_point, tkwargs)
         end_hv = time.time()
         end_tot = time.time()
         iter_res['time_tot'].append(end_tot - start_tot)
@@ -182,7 +176,6 @@ if __name__ == "__main__":
             "experiment": experiment,
             "HV_PARETO": hv_pareto,
             "data": data,
-            "outcomes": outcomes,
         }
         list_dump.update(iter_res)
         with open(os.path.join(config["OUTPUT_DIR"], "ax_state_init.json"), 'wb') as handle:
@@ -194,7 +187,6 @@ if __name__ == "__main__":
         experiment = tmp_list.pop('experiment')
         hv_pareto = tmp_list.pop('HV_PARETO')
         data = tmp_list.pop('data')
-        outcomes = tmp_list.pop('outcomes')
         iter_res.update(tmp_list)
 
     tol = config["hv_tolerance"]
@@ -234,14 +226,8 @@ if __name__ == "__main__":
         trial.run()
         end_trail = time.time()
         data = Data.from_multiple_data([data, trial.fetch_data()])
-        exp_df = exp_to_df(experiment)
-        outcomes = torch.tensor(exp_df[names[:M]].values, **tkwargs)
         start_hv = time.time()
-        partitioning = DominatedPartitioning(ref_point=problem.ref_point, Y=outcomes)
-        try:
-            hv = partitioning.compute_hypervolume().item()
-        except:
-            hv = 0.
+        hv = get_hypervolume(experiment, ref_point, tkwargs)
 
         end_hv = time.time()
         end_tot = time.time()
